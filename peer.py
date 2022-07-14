@@ -15,6 +15,14 @@ class ElectChainPeer:
             self.got_all = True
             print(f'{self.id} got all responses')
 
+    def init(self):
+        self.client.loop_start()
+        while len(self.hellos) < 10:
+            self.client.publish('init', self.id)
+            self.client.subscribe('init')
+            time.sleep(1)
+        self.client.loop_stop()
+
     def connect(self, broker_address):
         self.broker_address = broker_address
         self.client.connect(broker_address)
@@ -31,11 +39,9 @@ class ElectChainPeer:
 
         self.client.message_callback_add('init', self.listen_init)
         self.client.loop_start()
-        while len(self.hellos) < 10:
-            self.client.publish('init', self.id)
-            self.client.subscribe('init')
-            time.sleep(1)
-        self.client.loop_stop()
+
+        self.init()
+ 
     
     def loop(self):
         self.client.loop_forever()
