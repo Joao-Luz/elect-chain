@@ -18,9 +18,9 @@ class ElectChainPeer:
     def init(self):
         self.client.loop_start()
         while len(self.hellos) < 10:
+            time.sleep(0.5)
             self.client.publish('init', self.id)
-            self.client.subscribe('init')
-            time.sleep(1)
+        self.client.loop_stop()
         self.client.loop_stop()
 
     def connect(self, broker_address):
@@ -29,16 +29,17 @@ class ElectChainPeer:
 
         print(f'I\'m peer {self.id} and i\'m connected!')
 
-        self.client.subscribe('election')
-        self.client.subscribe('challenge')
-
         self.hellos = []
         self.init_responses = 0
         self.state = 'init'
         self.got_all = False
 
+        self.client.subscribe('challenge')
+        self.client.subscribe('election')
+        self.client.subscribe('init')
+
         self.client.message_callback_add('init', self.listen_init)
-        self.client.loop_start()
+        self.client.message_callback_add('election', self.listen_elect)
 
         self.init()
  
