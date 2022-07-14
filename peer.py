@@ -27,6 +27,7 @@ class ElectChainPeer:
         self.hellos = []
         self.init_responses = 0
         self.state = 'init'
+        self.got_all = False
 
         self.client.message_callback_add('init', self.listen_init)
         self.client.loop_start()
