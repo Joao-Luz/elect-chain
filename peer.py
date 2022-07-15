@@ -23,7 +23,16 @@ class ElectChainPeer:
     def listen_elect(self, client, userdata, message):
         body = json.loads(message.payload)
 
+        if len(self.elections) == 10:
+            self.elections = []
+
         self.elections.append((body['id'], body['election']))
+    
+    def listen_challenge(self, client, userdata, message):
+        body = json.loads(message.payload)
+
+        if body['id'] == self.current_leader:
+            self.current_challenge = body['challenge']
 
     def init(self):
         self.client.loop_start()
@@ -33,8 +42,6 @@ class ElectChainPeer:
         self.client.loop_stop()
 
     def elect(self):
-        self.elections = []
-
         body = {
             'election': random.randint(0, 255),
             'id': self.id
@@ -53,6 +60,29 @@ class ElectChainPeer:
         self.current_leader = elected[0]
 
         print(f'Elected {elected[0]} with election {elected[1]}')
+    
+    def challenge(self):
+        if self.current_leader == self.id:
+            challenge = random.randint(1,120)
+
+            body = {
+                'id': self.id,
+                'challenge': challenge
+            }
+
+            message = json.dumps(body)
+            self.client.publish('challenge', message)
+            self.current_challenge = challenge
+        
+            print(f'Current leader {self.id} says: challenge = {challenge}')
+
+        else:
+            self.client.loop_start()
+            while self.current_challenge == None:
+                time.sleep(0.5)
+            self.client.loop_stop()
+
+            print(f'Received challenge = {self.current_challenge}')
 
     def connect(self, broker_address):
         self.broker_address = broker_address
@@ -63,6 +93,7 @@ class ElectChainPeer:
         self.hellos = []
         self.elections = []
         self.current_leader = None
+        self.current_challenge = None
         self.init_responses = 0
         self.state = 'init'
         self.got_all = False
@@ -73,9 +104,11 @@ class ElectChainPeer:
 
         self.client.message_callback_add('init', self.listen_init)
         self.client.message_callback_add('election', self.listen_elect)
+        self.client.message_callback_add('challenge', self.listen_challenge)
 
         self.init()
         self.elect()
+        self.challenge()
  
     
     def loop(self):
