@@ -35,6 +35,8 @@ class ElectChainPeer:
             self.current_challenge = body['challenge']
 
     def init(self):
+        self.state = 'init'
+
         self.client.loop_start()
         while len(self.hellos) < 10:
             time.sleep(0.5)
@@ -42,6 +44,8 @@ class ElectChainPeer:
         self.client.loop_stop()
 
     def elect(self):
+        self.state = 'elect'
+
         body = {
             'election': random.randint(0, 255),
             'id': self.id
@@ -62,6 +66,8 @@ class ElectChainPeer:
         print(f'Elected {elected[0]} with election {elected[1]}')
     
     def challenge(self):
+        self.state = 'challenge'
+        
         if self.current_leader == self.id:
             challenge = random.randint(1,120)
 
@@ -95,7 +101,7 @@ class ElectChainPeer:
         self.current_leader = None
         self.current_challenge = None
         self.init_responses = 0
-        self.state = 'init'
+        self.state = None
         self.got_all = False
 
         self.client.subscribe('challenge')
