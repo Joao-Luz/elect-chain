@@ -11,7 +11,11 @@ from threading import Event
 class ElectChainPeer:
     def __init__(self):
         self.client = mqtt.Client()
-        self.event_object = Event()
+        self.event_objects = {
+            'init': Event(),
+            'election': Event(),
+            'challenge': Event()
+        }
 
     def listen_init(self, client, userdata, message):
 
@@ -21,7 +25,7 @@ class ElectChainPeer:
             self.client.publish('init', self.id)
 
         if len(self.hellos) == 10 and not self.got_all:
-            self.event_object.set()
+            self.event_objects['init'].set()
             self.got_all = True
 
     def listen_elect(self, client, userdata, message):
@@ -33,26 +37,26 @@ class ElectChainPeer:
         self.elections.append((body['id'], body['election']))
 
         if len(self.elections) == 10:
-            self.event_object.set()
+            self.event_objects['election'].set()
     
     def listen_challenge(self, client, userdata, message):
         body = json.loads(message.payload)
 
         self.current_challenge = body['challenge']
-        self.event_object.set()
+        self.event_objects['challenge'].set()
 
     def init(self):
         self.state = 'init'
         self.client.publish('init', self.id)
 
         self.client.loop_start()
-        flag = self.event_object.wait(5)
+        flag = self.event_objects['init'].wait(10)
         if not flag:
             print(f'{self.id}: Timeout waiting for init messages. Exitting...')
             sys.exit()
         self.client.loop_stop()
 
-        self.event_object.clear()
+        self.event_objects['init'].clear()
 
     def elect(self):
         self.state = 'elect'
@@ -66,13 +70,13 @@ class ElectChainPeer:
         self.client.publish('election', message)
 
         self.client.loop_start()
-        flag = self.event_object.wait(5)
+        flag = self.event_objects['election'].wait(10)
         if not flag:
             print(f'{self.id}: Timeout waiting for elections. Exitting...')
             sys.exit()
         self.client.loop_stop()
 
-        self.event_object.clear()
+        self.event_objects['election'].clear()
         elected = sorted(self.elections, key=operator.itemgetter(1, 0))[-1]
         self.current_leader = elected[0]
     
@@ -95,13 +99,13 @@ class ElectChainPeer:
 
         else:
             self.client.loop_start()
-            flag = self.event_object.wait(5)
+            flag = self.event_objects['challenge'].wait(10)
             if not flag:
                 print(f'{self.id}: Timeout waiting for challenge. Exitting...')
                 sys.exit()
             self.client.loop_stop()
 
-            self.event_object.clear()
+            self.event_objects['challenge'].clear()
 
     def connect(self, broker_address):
         self.id = time.time_ns()
