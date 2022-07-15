@@ -8,7 +8,6 @@ import paho.mqtt.client as mqtt
 
 class ElectChainPeer:
     def __init__(self):
-        self.id = time.time_ns()
         self.client = mqtt.Client()
 
     def listen_init(self, client, userdata, message):
@@ -18,7 +17,6 @@ class ElectChainPeer:
 
         if len(self.hellos) == 10 and not self.got_all:
             self.got_all = True
-            print(f'{self.id} got all responses')
         
     def listen_elect(self, client, userdata, message):
         body = json.loads(message.payload)
@@ -62,12 +60,10 @@ class ElectChainPeer:
 
         elected = sorted(self.elections, key=operator.itemgetter(1, 0))[-1]
         self.current_leader = elected[0]
-
-        print(f'Elected {elected[0]} with election {elected[1]}')
     
     def challenge(self):
         self.state = 'challenge'
-        
+
         if self.current_leader == self.id:
             challenge = random.randint(1,120)
 
@@ -80,7 +76,7 @@ class ElectChainPeer:
             self.client.publish('challenge', message)
             self.current_challenge = challenge
         
-            print(f'Current leader {self.id} says: challenge = {challenge}')
+            print(f'{self.id}: Current leader. Challenge is {self.current_challenge}')
 
         else:
             self.client.loop_start()
@@ -88,13 +84,14 @@ class ElectChainPeer:
                 time.sleep(0.5)
             self.client.loop_stop()
 
-            print(f'Received challenge = {self.current_challenge}')
-
     def connect(self, broker_address):
+        self.id = time.time_ns()
         self.broker_address = broker_address
         self.client.connect(broker_address)
-
-        print(f'I\'m peer {self.id} and i\'m connected!')
+        print(f'{self.id}: Connected to broker')
+    
+    def run(self):
+        print(f'{self.id}: Started transaction mining')
 
         self.hellos = []
         self.elections = []
@@ -113,12 +110,15 @@ class ElectChainPeer:
         self.client.message_callback_add('challenge', self.listen_challenge)
 
         self.init()
+        print(f'{self.id}: Received all init messages')
+
         self.elect()
+        print(f'{self.id}: Received all election messages. Leader is {self.current_leader}')
+
         self.challenge()
- 
-    
-    def loop(self):
-        self.client.loop_forever()
+        print(f'{self.id}: Received challenge {self.current_challenge}')
+        
 
 elect_chain_peer = ElectChainPeer()
 elect_chain_peer.connect('127.0.0.1')
+elect_chain_peer.run()
