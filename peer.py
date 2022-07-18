@@ -271,6 +271,12 @@ class ElectChainPeer:
                 break
         self.client.loop_stop()
 
-elect_chain_peer = ElectChainPeer()
-elect_chain_peer.connect('127.0.0.1')
-elect_chain_peer.run()
+if __name__ == '__main__':
+    if len(sys.argv) <= 1:
+        print('Usage:\n\tpython peer.py [broker_address]')
+        sys.exit()
+
+    address = sys.argv[1]
+    elect_chain_peer = ElectChainPeer()
+    elect_chain_peer.connect(address)
+    elect_chain_peer.run()
