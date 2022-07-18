@@ -74,8 +74,15 @@ These are the main states of the program and what happens inside each of them:
 
     The second thread tries to find a solution to the challenge and, when one is found, publishes to the broker and goes to voting. This thread also spaws n processes to perform a parallel mining of the seed, with n being the number of available cores.
 
-5. **Voting**
-All users must wait for everyone's vote for the current solution. If the majority (i.e., at least 6 people) vote yes, all peers update the internal table containing the transactions and returns to a new challenge. Else, return to the `running` process.
+5. **Voting**: All users must wait for everyone's vote for the current solution. If the majority (i.e., at least 6 people) vote yes, all peers update the internal table containing the transactions and returns to a new challenge. Else, return to the `running` process.
+
+## Usage
+
+To run an instance of the peer, do:
+
+    $ python peer.py [broker_address]
+
+There is also a testing script `launch_clients.sh` that will launch the required 10 instances and run the system locally.
 
 ## Explanation video
 
