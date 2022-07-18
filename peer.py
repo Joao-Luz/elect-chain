@@ -6,11 +6,13 @@ import random
 import sys
 import time
 from multiprocessing import Process, Value
-from threading import Thread,Event
+from threading import Event, Thread
 
 import paho.mqtt.client as mqtt
 from bitstring import BitArray
 from torch import channels_last, solve
+
+from async_message_queue import AsyncMessageQueue
 
 
 class ElectChainPeer:
@@ -21,7 +23,8 @@ class ElectChainPeer:
             'election': Event(),
             'challenge': Event(),
             'sync': Event(),
-            'validate': Event()
+            'validate': Event(),
+            'voting': Event()
         }
 
     def test_solution(seed, challenge):
@@ -79,15 +82,35 @@ class ElectChainPeer:
         
         self.event_objects['validate'].set()
 
+    def listen_voting(self, client, userdata, message):
+        body = json.loads(message.payload)
+
+        transaction = str(body['transaction'])
+        seed = str(body['seed'])
+
+        if transaction not in self.current_votes:
+            self.current_votes[transaction] = {}
+            self.current_votes[transaction][seed] = {'yes': 0, 'no': 0}
+        elif seed not in self.current_votes[transaction]:
+            self.current_votes[transaction][seed] = {'yes': 0, 'no': 0}
+
+        if body['vote']:
+            self.current_votes[transaction][seed]['yes'] += 1
+        else:
+            self.current_votes[transaction][seed]['no'] += 1
+
+        total = self.current_votes[transaction][seed]['yes'] + self.current_votes[transaction][seed]['no']
+
+        if total == 10:
+            self.event_objects['voting'].set()
+
     def init(self):
         self.client.publish('init', self.id)
 
-        self.client.loop_start()
         flag = self.event_objects['init'].wait(10)
         if not flag:
             print(f'{self.id}: Timeout waiting for init messages. Exitting...')
             sys.exit()
-        self.client.loop_stop()
 
         self.event_objects['init'].clear()
         self.state = 'election'
@@ -102,12 +125,10 @@ class ElectChainPeer:
         message = json.dumps(body)
         self.client.publish('election', message)
 
-        self.client.loop_start()
         flag = self.event_objects['election'].wait(10)
         if not flag:
             print(f'{self.id}: Timeout waiting for elections. Exitting...')
             sys.exit()
-        self.client.loop_stop()
 
         self.event_objects['election'].clear()
         elected = sorted(self.elections, key=operator.itemgetter(1, 0))[-1]
@@ -120,12 +141,10 @@ class ElectChainPeer:
         message = json.dumps(body)
         self.client.publish('sync', message)
 
-        self.client.loop_start()
         flag = self.event_objects['sync'].wait(10)
         if not flag:
             print(f'{self.id}: Timeout waiting for sync. Exitting...')
             sys.exit()
-        self.client.loop_stop()
         self.event_objects['sync'].clear()
 
         self.state = 'challenge'
@@ -147,13 +166,10 @@ class ElectChainPeer:
         
             print(f'{self.id}: Current leader. Challenge is {self.current_challenge}')
 
-        # else:
-        self.client.loop_start()
         flag = self.event_objects['challenge'].wait(10)
         if not flag:
             print(f'{self.id}: Timeout waiting for challenge. Exitting...')
             sys.exit()
-        self.client.loop_stop()
 
         self.event_objects['challenge'].clear()
         
@@ -205,15 +221,10 @@ class ElectChainPeer:
         self.client.publish('solution', message)
 
     def validate(self):
-        solved = False
-
         while self.current_solution == None:
-            self.client.loop_start()
-            self.event_objects['validate'].wait()
-            self.client.loop_stop()
 
+            self.event_objects['validate'].wait()
             self.event_objects['validate'].clear()
-            solved = ElectChainPeer.test_solution(self.current_solution[1], self.current_challenge)
 
             if self.current_solution == None:
                 body = {
@@ -254,6 +265,24 @@ class ElectChainPeer:
 
         self.state = 'voting'
 
+    def voting(self):
+        flag = self.event_objects['voting'].wait(5)
+        if not flag:
+            print('Timeout')
+            sys.exit()
+        self.event_objects['voting'].clear()
+
+        print('Voted')
+
+        transaction = str(self.current_transaction)
+        seed = str(self.current_solution[1])
+
+        if self.current_votes[transaction][seed]['yes'] >= 6:
+            print(f'{self.id}: Solution {self.current_solution[1]} from {self.current_solution[0]} wins.')
+            self.state = 'update'
+        else:
+            print(f'{self.id}: Solution {self.current_solution[1]} from {self.current_solution[0]} loses.')
+            self.state = 'running'
 
     def connect(self, broker_address):
         self.id = time.time_ns()
@@ -273,6 +302,7 @@ class ElectChainPeer:
         self.state = 'init'
         self.got_all = False
         self.current_solution = None
+        self.current_votes = {}
 
         self.transactions = []
         self.current_transaction = 0
@@ -281,35 +311,38 @@ class ElectChainPeer:
         self.client.subscribe('challenge')
         self.client.subscribe('election')
         self.client.subscribe('solution')
+        self.client.subscribe('voting')
         self.client.subscribe('init')
 
         self.client.message_callback_add('init', self.listen_init)
         self.client.message_callback_add('election', self.listen_elect)
         self.client.message_callback_add('challenge', self.listen_challenge)
         self.client.message_callback_add('solution', self.listen_solution)
+        self.client.message_callback_add('voting', self.listen_voting)
         self.client.message_callback_add('sync', self.sync)
 
+        self.client.loop_start()
+        if self.state == 'init':
+            self.init()
+            print(f'{self.id}: Received all init messages')
+        
+        if self.state == 'election':
+            self.elect()
+            print(f'{self.id}: Received all election messages. Leader is {self.current_leader}')
         while True:
-            if self.state == 'init':
-                self.init()
-                print(f'{self.id}: Received all init messages')
-            
-            elif self.state == 'election':
-                self.elect()
-                print(f'{self.id}: Received all election messages. Leader is {self.current_leader}')
-
-            elif self.state == 'challenge':
+            if self.state == 'challenge':
                 self.challenge()
                 print(f'{self.id}: Received challenge {self.current_challenge}')
 
             elif self.state == 'running':
                 self.runnig()
 
-            # elif self.state == 'voting':
-            #     self.vote()
+            elif self.state == 'voting':
+                self.voting()
 
             else:
                 break
+        self.client.loop_stop()
 
 elect_chain_peer = ElectChainPeer()
 elect_chain_peer.connect('127.0.0.1')
