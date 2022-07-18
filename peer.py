@@ -10,21 +10,21 @@ from threading import Event, Thread
 
 import paho.mqtt.client as mqtt
 from bitstring import BitArray
+import pandas as pd
 from torch import channels_last, solve
 
-from async_message_queue import AsyncMessageQueue
+from queue import Queue
 
 
 class ElectChainPeer:
     def __init__(self):
         self.client = mqtt.Client()
-        self.event_objects = {
-            'init': Event(),
-            'election': Event(),
-            'challenge': Event(),
-            'sync': Event(),
-            'validate': Event(),
-            'voting': Event()
+        self.msg_queues = {
+            'init': Queue(),
+            'election': Queue(),
+            'challenge': Queue(),
+            'solution': Queue(),
+            'voting': Queue()
         }
 
     def test_solution(seed, challenge):
@@ -39,139 +39,61 @@ class ElectChainPeer:
 
         return  not bool.from_bytes(xor, "big")
 
-    def sync(self, client, userdata, message):
-        self.sync_count += 1
-        if self.sync_count == 10:
-            self.sync_count = 0
-            self.event_objects['sync'].set()
-
-    def listen_init(self, client, userdata, message):
-
-        received_id = int.from_bytes(message.payload, 'big')
-        if received_id not in self.hellos:
-            self.hellos.append(received_id)
-            self.client.publish('init', self.id)
-
-        if len(self.hellos) == 10 and not self.got_all:
-            self.event_objects['init'].set()
-            self.got_all = True
-
-    def listen_elect(self, client, userdata, message):
+    def push_msg_queues(self, client, userdata, message):
+        topic = message.topic
         body = json.loads(message.payload)
 
-        if len(self.elections) == 10:
-            self.elections = []
-
-        self.elections.append((body['id'], body['election']))
-
-        if len(self.elections) == 10:
-            self.event_objects['election'].set()
-    
-    def listen_challenge(self, client, userdata, message):
-        body = json.loads(message.payload)
-
-        if body['id'] == self.current_leader:
-            self.current_challenge = body['challenge']
-            self.event_objects['challenge'].set()
-
-    def listen_solution(self, client, userdata, message):
-        body = json.loads(message.payload)
-
-        if self.current_solution == None and ElectChainPeer.test_solution(body['seed'], self.current_challenge):
-            self.current_solution = (body['id'], body['seed'])
-        
-        self.event_objects['validate'].set()
-
-    def listen_voting(self, client, userdata, message):
-        body = json.loads(message.payload)
-
-        transaction = str(body['transaction'])
-        seed = str(body['seed'])
-
-        if transaction not in self.current_votes:
-            self.current_votes[transaction] = {}
-            self.current_votes[transaction][seed] = {'yes': 0, 'no': 0}
-        elif seed not in self.current_votes[transaction]:
-            self.current_votes[transaction][seed] = {'yes': 0, 'no': 0}
-
-        if body['vote']:
-            self.current_votes[transaction][seed]['yes'] += 1
-        else:
-            self.current_votes[transaction][seed]['no'] += 1
-
-        total = self.current_votes[transaction][seed]['yes'] + self.current_votes[transaction][seed]['no']
-
-        if total == 10:
-            self.event_objects['voting'].set()
+        self.msg_queues[topic].put(body)
 
     def init(self):
-        self.client.publish('init', self.id)
+        message = json.dumps({
+            'id': self.id
+        })
+        self.client.publish('init', message)
 
-        flag = self.event_objects['init'].wait(10)
-        if not flag:
-            print(f'{self.id}: Timeout waiting for init messages. Exitting...')
-            sys.exit()
+        init_msgs = []
+        while len(init_msgs) < 10:
+            id = self.msg_queues['init'].get()['id']
 
-        self.event_objects['init'].clear()
+            if id not in init_msgs:
+                init_msgs.append(id)
+                self.client.publish('init', message)
+
         self.state = 'election'
 
     def elect(self):
-
-        body = {
+        message = json.dumps({
             'election': random.randint(0, 255),
             'id': self.id
-        }
-
-        message = json.dumps(body)
+        })
         self.client.publish('election', message)
 
-        flag = self.event_objects['election'].wait(10)
-        if not flag:
-            print(f'{self.id}: Timeout waiting for elections. Exitting...')
-            sys.exit()
+        election = []
+        for _ in range(10):
+            election.append(self.msg_queues['election'].get())
 
-        self.event_objects['election'].clear()
-        elected = sorted(self.elections, key=operator.itemgetter(1, 0))[-1]
-        self.current_leader = elected[0]
-
-        body = {
-            'id': self.id
-        }
-
-        message = json.dumps(body)
-        self.client.publish('sync', message)
-
-        flag = self.event_objects['sync'].wait(10)
-        if not flag:
-            print(f'{self.id}: Timeout waiting for sync. Exitting...')
-            sys.exit()
-        self.event_objects['sync'].clear()
+        leader = sorted(election, key=operator.itemgetter('election', 'id'))[-1]
+        self.current_leader = leader['id']
 
         self.state = 'challenge'
     
     def challenge(self):
-
         if self.current_leader == self.id:
-            # challenge = random.randint(1,120)
-            challenge = 20
+            challenge = random.randint(1,120)
 
-            body = {
+            message = json.dumps({
                 'id': self.id,
                 'challenge': challenge
-            }
-
-            message = json.dumps(body)
+            })
             self.client.publish('challenge', message)
-            self.current_challenge = challenge
         
-            print(f'{self.id}: Current leader. Challenge is {self.current_challenge}')
+            print(f'{self.id}: Current leader. Challenge is {challenge}')
+        
+        challenge_msg = self.msg_queues['challenge'].get()
+        while challenge_msg['id'] != self.current_leader:
+            challenge_msg = self.msg_queues['challenge'].get()
 
-        flag = self.event_objects['challenge'].wait(10)
-        if not flag:
-            print(f'{self.id}: Timeout waiting for challenge. Exitting...')
-            sys.exit()
-
-        self.event_objects['challenge'].clear()
+        self.current_challenge = challenge_msg['challenge']
         
         self.transactions.append({'transaction_id': self.current_transaction,'challenge': self.current_challenge,'seed': '', 'winner': -1})
         self.state = 'running'
@@ -205,6 +127,7 @@ class ElectChainPeer:
         for p in self.mining_processes:
             p.join()
 
+        self.mining_processes = []
         n = seed.value
 
         if n == -1: return
@@ -212,43 +135,42 @@ class ElectChainPeer:
         hashed = hashlib.sha1(n.to_bytes((n.bit_length()+7)//8, 'big')).digest()
         print(f'{self.id}: Found seed: {n} - {hashed}')
 
-        body = {
+        message = json.dumps({
             'id': self.id,
             'transaction': self.current_transaction,
             'seed': n
-        }
-        message = json.dumps(body)
+        })
         self.client.publish('solution', message)
 
     def validate(self):
-        while self.current_solution == None:
+        solved = False
+        solution = None
+        while not solved:
+            solution = self.msg_queues['solution'].get()
 
-            self.event_objects['validate'].wait()
-            self.event_objects['validate'].clear()
+            transaction = solution['transaction']
+            seed = solution['seed']
+            challenge = self.transactions[transaction]['challenge']
 
-            if self.current_solution == None:
-                body = {
-                    'id': self.id,
-                    'transaction': self.current_transaction,
-                    'seed': self.current_solution[1],
-                    'vote': False
-                }
-                message = json.dumps(body)
-                self.client.publish('voting', message)
+            solved = ElectChainPeer.test_solution(seed, challenge)
+            message = json.dumps({
+                'id': self.id,
+                'transaction': transaction,
+                'seed': seed,
+                'vote': solved
+            })
+            self.client.publish('voting', message)
         
-        body = {
-            'id': self.id,
-            'transaction': self.current_transaction,
-            'seed': self.current_solution[1],
-            'vote': True
-        }
-        message = json.dumps(body)
-        self.client.publish('voting', message)
-
-        print(f'{self.id}: Solution {self.current_solution[1]} from {self.current_solution[0]} passes.')
+        self.current_solution = solution
+        print(f'{self.id}: Solution {solution["seed"]} for transaction {solution["transaction"]} from {solution["id"]} passes.')
 
         for p in self.mining_processes:
-            p.terminate()
+            try:
+                p.terminate()
+            except:
+                pass
+
+        self.mining_processes = []
 
     def runnig(self):
         self.current_solution = None
@@ -266,23 +188,30 @@ class ElectChainPeer:
         self.state = 'voting'
 
     def voting(self):
-        flag = self.event_objects['voting'].wait(5)
-        if not flag:
-            print('Timeout')
-            sys.exit()
-        self.event_objects['voting'].clear()
+        vote_count = 0
 
-        print('Voted')
+        for _ in range(10):
+            vote_msg = self.msg_queues['voting'].get()
 
-        transaction = str(self.current_transaction)
-        seed = str(self.current_solution[1])
+            vote = vote_msg['vote']
 
-        if self.current_votes[transaction][seed]['yes'] >= 6:
-            print(f'{self.id}: Solution {self.current_solution[1]} from {self.current_solution[0]} wins.')
+            if vote: vote_count += 1
+
+        if vote_count >= 6:
+            print(f'{self.id}: {self.current_solution["id"]} wins transaction {self.current_solution["transaction"]}.')
             self.state = 'update'
         else:
-            print(f'{self.id}: Solution {self.current_solution[1]} from {self.current_solution[0]} loses.')
             self.state = 'running'
+
+    def update(self):
+        seed = self.current_solution['seed']
+        id = self.current_solution['id']
+        self.transactions[self.current_transaction]['seed'] = str(seed)
+        self.transactions[self.current_transaction]['winner'] = id
+
+        self.current_transaction += 1
+        
+        self.state = 'challenge'
 
     def connect(self, broker_address):
         self.id = time.time_ns()
@@ -307,19 +236,13 @@ class ElectChainPeer:
         self.transactions = []
         self.current_transaction = 0
 
-        self.client.subscribe('sync')
         self.client.subscribe('challenge')
         self.client.subscribe('election')
         self.client.subscribe('solution')
         self.client.subscribe('voting')
         self.client.subscribe('init')
 
-        self.client.message_callback_add('init', self.listen_init)
-        self.client.message_callback_add('election', self.listen_elect)
-        self.client.message_callback_add('challenge', self.listen_challenge)
-        self.client.message_callback_add('solution', self.listen_solution)
-        self.client.message_callback_add('voting', self.listen_voting)
-        self.client.message_callback_add('sync', self.sync)
+        self.client.on_message = self.push_msg_queues
 
         self.client.loop_start()
         if self.state == 'init':
@@ -339,6 +262,10 @@ class ElectChainPeer:
 
             elif self.state == 'voting':
                 self.voting()
+
+            elif self.state == 'update':
+                self.update()
+                print(pd.DataFrame().from_dict(self.transactions))
 
             else:
                 break
