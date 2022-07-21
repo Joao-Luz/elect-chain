@@ -86,4 +86,4 @@ There is also a testing script `launch_clients.sh` that will launch the required
 
 ## Explanation video
 
-Not yet :(
+[Link](https://drive.google.com/drive/folders/1zMRrRYSwVeAVy3M_LxpoIxHzpycjTLX7?usp=sharing)
